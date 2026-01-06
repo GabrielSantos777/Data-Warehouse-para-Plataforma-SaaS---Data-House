@@ -22,71 +22,59 @@ engine = create_engine(DATABASE_URI)
 fake = Faker('pt-br')
 
 
-def popular_dim_tempo():
-    print("Gerando Dimensão Tempo...")
-    datas = []
-    data_inicio = datetime(2023, 1, 1)
-    for i in range(730): # 2 anos
-        dt = data_inicio + timedelta(days=i)
-        datas.append({
-            'data_completa': dt,
-            'ano': dt.year,
-            'mes': dt.month,
-            'nome_mes': dt.strftime('%B'),
-            'trimestre': (dt.month - 1) // 3 + 1,
-            'dia_semana': dt.strftime('%A'),
-            'final_semana': dt.weekday() >= 5
-        })
-    df = pd.DataFrame(datas)
-    df.to_sql('dim_tempo', engine, if_exists='append', index=False)
-    
-def popular_dim_planos():
-    print("Gerando Dimensão Planos...")
+def carregar_dimensoes():
+    print("Iniciando carga das Dimensões...")
     planos = [
-        {'nome_plano': 'Basic', 'valor_mensal': 99.00, 'limite_usuarios': 5},
-        {'nome_plano': 'Pro', 'valor_mensal': 299.00, 'limite_usuarios': 20},
-        {'nome_plano': 'Enterprise', 'valor_mensal': 999.00, 'limite_usuarios': 100}
+        {'nome_plano': 'Basic', 'valor_mensal': 99.0, 'limite_usuarios': 5},
+        {'nome_plano': 'Pro', 'valor_mensal': 299.0, 'limite_usuarios': 20},
+        {'nome_plano': 'Enterprise', 'valor_mensal': 999.0, 'limite_usuarios': 100}
     ]
-    pd.DataFrame(planos).to_sql('dim_planos', engine, if_exists='append', index=False)
+    pd.DataFrame(planos).to_sql('dim_planos', engine, schema='public', if_exists='append', index=False)
 
-def popular_dim_clientes(n=100):
-    print(f"Gerando {n} Clientes...")
     clientes = []
-    for _ in range(n):
+    for _ in range(50):
         clientes.append({
             'id_natural_cliente': fake.uuid4(),
             'nome_cliente': fake.name(),
             'email_cliente': fake.email(),
             'empresa_cliente': fake.company(),
-            'segmento_empresa': random.choice(['Tech', 'Saúde', 'Varejo']),
+            'segmento_empresa': random.choice(['Tech', 'Varejo', 'Saúde']),
             'pais': 'Brasil'
         })
-    df = pd.DataFrame(clientes)
-    df.to_sql('dim_clientes', engine, if_exists='append', index=False, method='multi')
+    pd.DataFrame(clientes).to_sql('dim_clientes', engine, schema='public', if_exists='append', index=False)
 
-def popular_fato_assinaturas(n_vendas=500):
-    print(f"Gerando {n_vendas} Assinaturas...")
-    
+    datas = []
+    start_date = datetime(2024, 1, 1)
+    for i in range(365):
+        dt = start_date + timedelta(days=i)
+        datas.append({
+            'data_completa': dt, 'ano': dt.year, 'mes': dt.month,
+            'nome_mes': dt.strftime('%B'), 'trimestre': (dt.month-1)//3+1,
+            'dia_semana': dt.strftime('%A'), 'final_semana': dt.weekday() >= 5
+        })
+    pd.DataFrame(datas).to_sql('dim_tempo', engine, schema='public', if_exists='append', index=False)
+    print("Dimensões carregadas!")
+
+def carregar_fato():
+    print("Iniciando carga da Tabela Fato...")
     with engine.connect() as conn:
-        check_cols = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name = 'dim_clientes'"))
-        colunas_reais = [row[0] for row in check_cols]
-        print(f"DEBUG: Colunas encontradas no banco para 'dim_clientes': {colunas_reais}")
-        
-        if 'sk_cliente' not in colunas_reais:
-            print("ERRO CRÍTICO: A coluna sk_cliente realmente não existe no banco de dados!")
-            return
+        clientes = pd.read_sql("SELECT sk_cliente FROM public.dim_clientes LIMIT 1",conn)
+        planos = pd.read_sql("SELECT sk_plano, valor_mensal FROM public.dim_planos", conn)
+        datas = pd.read_sql("SELECT sk_tempo FROM public.dim_tempo", conn)
 
-        sk_clientes = [row[0] for row in conn.execute(text("SELECT sk_cliente FROM dim_clientes")).fetchall()]
-        sk_planos = [dict(row._mapping) for row in conn.execute(text("SELECT sk_plano, valor_mensal FROM dim_planos")).fetchall()]
-        sk_datas = [row[0] for row in conn.execute(text("SELECT sk_tempo FROM dim_tempo")).fetchall()]
-    
+        vendas = []
+        for _ in range(200):
+            p = planos.sample(1).iloc[0]
+            vendas.append({
+                'fk_cliente': clientes.sample(1).iloc[0]['sk_cliente'],
+                'fk_plano': p['sk_plano'],
+                'fk_data_inicio': datas.sample(1).iloc[0]['sk_tempo'],
+                'valor_contrato': float(p['valor_mensal']) * random.randint(1, 12),
+                'status_assinatura': random.choice(['Ativa', 'Cancelada'])
+            })
+        pd.DataFrame(vendas).to_sql('fato_assinaturas', engine, schema='public', if_exists='append', index=False)
+    print("Tabela Fato carregada!")
+
 if __name__ == "__main__":
-    try:
-        popular_dim_tempo()
-        popular_dim_planos()
-        popular_dim_clientes()
-        popular_fato_assinaturas()
-        print("\nSucesso total!")
-    except Exception as e:
-        print(f"\nErro durante a execução: {e}")
-  
+    carregar_dimensoes()
+    carregar_fato()
